@@ -22,6 +22,7 @@ import android.graphics.PixelFormat
 import android.graphics.Point
 import android.util.Log
 import android.util.Size
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -148,6 +149,17 @@ abstract class OverlayMenu(
 
     private val onLockedPositionChangedListener: (Point?) -> Unit = ::onLockedPositionChanged
 
+    // ========== 折叠/展开相关成员变量 ==========
+    /** 当前是否处于折叠状态（只显示移动按钮） */
+    private var isCollapsed = false
+    /** 是否正在拖拽移动（用于区分长按移动和短按点击） */
+    private var isDragging = false
+    /** 手势检测器，用于识别长按事件 */
+    private lateinit var gestureDetector: GestureDetector
+    /** 保存折叠前每个按钮的原始可见性，用于展开时精确恢复 */
+    private val originalVisibilities = mutableMapOf<View, Int>()
+    // =====================================
+
     /**
      * Creates the root view of the menu overlay.
      *
@@ -203,6 +215,15 @@ abstract class OverlayMenu(
         // Setup the touch event handler for the move button
         moveTouchEventHandler = OverlayMenuMoveTouchEventHandler(::updateMenuPosition)
 
+        // 初始化手势检测器
+        gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onLongPress(e: MotionEvent) {
+                // 长按时标记为拖拽模式，并将事件交给移动处理器
+                isDragging = true
+                moveTouchEventHandler.onTouchEvent(menuLayout, e)
+            }
+        })
+
         // Restore the last menu position, if any.
         menuLayoutParams.gravity = Gravity.TOP or Gravity.START
         overlayLayoutParams.gravity = Gravity.TOP or Gravity.START
@@ -237,11 +258,25 @@ abstract class OverlayMenu(
 
     private fun setupButtons(buttonsContainer: ViewGroup) {
         buttonsContainer.forEach { view ->
-            @SuppressLint("ClickableViewAccessibility") // View is only drag and drop, no click
+            @SuppressLint("ClickableViewAccessibility")
             when (view.id) {
                 R.id.btn_move -> {
                     moveButton = view
-                    view.setOnTouchListener { _: View, event: MotionEvent -> onMoveTouched(event) }
+                    // 点击：折叠/展开菜单
+                    view.setOnClickListener { toggleCollapse() }
+                    // 触摸：先让手势检测器判断长按，再根据拖拽状态决定是否交给移动处理器
+                    view.setOnTouchListener { _, event ->
+                        gestureDetector.onTouchEvent(event)
+                        if (isDragging) {
+                            moveTouchEventHandler.onTouchEvent(menuLayout, event)
+                            if (event.action == MotionEvent.ACTION_UP) {
+                                isDragging = false
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
                 }
                 R.id.btn_hide_overlay -> {
                     hideOverlayButton = (view as ImageButton)
@@ -256,6 +291,77 @@ abstract class OverlayMenu(
         }
     }
 
+    // ========== 折叠/展开核心逻辑（精确恢复原始可见性，避免多余布局显示） ==========
+    /**
+     * 切换悬浮窗的折叠/展开状态。
+     * 折叠时隐藏所有非移动按钮（并保存它们的原始可见性），展开时恢复原始可见性。
+     * 对于调试面板（layout_debug）和错误角标（error_badge），因为初始状态就是隐藏的，
+     * 如果从未被显式显示过，展开时保持隐藏，避免意外显示。
+     */
+    private fun toggleCollapse() {
+        if (resizeController.isAnimating) return
+        isCollapsed = !isCollapsed
+
+        animateLayoutChanges {
+            // 1. 处理 buttonsContainer 内的所有子 View（移动按钮除外）
+            buttonsContainer.forEach { child ->
+                if (child == moveButton) return@forEach
+                if (isCollapsed) {
+                    // 折叠：保存当前可见性，然后隐藏
+                    originalVisibilities[child] = child.visibility
+                    child.visibility = View.GONE
+                } else {
+                    // 展开：恢复之前保存的可见性，如果从未保存过则默认可见（普通按钮默认可见）
+                    val originalVisibility = originalVisibilities.remove(child)
+                    child.visibility = originalVisibility ?: View.VISIBLE
+                }
+            }
+
+            // 2. 处理 error_badge（动态查找，避免跨模块 R 依赖）
+            val errorBadgeId = context.resources.getIdentifier("error_badge", "id", context.packageName)
+            if (errorBadgeId != 0) {
+                val errorBadge = menuLayout.findViewById<View>(errorBadgeId)
+                if (errorBadge != null) {
+                    if (isCollapsed) {
+                        originalVisibilities[errorBadge] = errorBadge.visibility
+                        errorBadge.visibility = View.GONE
+                    } else {
+                        val original = originalVisibilities.remove(errorBadge)
+                        // 默认隐藏，因为 error_badge 初始状态是 GONE
+                        errorBadge.visibility = original ?: View.GONE
+                    }
+                }
+            }
+
+            // 3. 处理调试面板 layout_debug（动态查找）
+            val debugLayoutId = context.resources.getIdentifier("layout_debug", "id", context.packageName)
+            if (debugLayoutId != 0) {
+                val debugPanel = menuLayout.findViewById<ViewGroup>(debugLayoutId)
+                if (debugPanel != null) {
+                    if (isCollapsed) {
+                        originalVisibilities[debugPanel] = debugPanel.visibility
+                        debugPanel.visibility = View.GONE
+                    } else {
+                        val original = originalVisibilities.remove(debugPanel)
+                        // 默认隐藏，因为 layout_debug 初始状态是 GONE
+                        debugPanel.visibility = original ?: View.GONE
+                    }
+                }
+            }
+        }
+
+        // 折叠后窗口缩小，需要重新调整位置避免超出屏幕
+        if (isCollapsed) {
+            menuLayout.doWhenMeasured {
+                val displaySize = displayConfigManager.displayConfig.sizePx
+                val newX = menuLayoutParams.x.coerceIn(0, displaySize.x - menuLayout.width)
+                val newY = menuLayoutParams.y.coerceIn(0, displaySize.y - menuLayout.height)
+                updateMenuPosition(Point(newX, newY))
+            }
+        }
+    }
+    // ==================================================
+
     final override fun start() {
         if (lifecycle.currentState != Lifecycle.State.CREATED) return
         if (animations.showAnimationIsRunning) return
@@ -263,7 +369,6 @@ abstract class OverlayMenu(
         super.start()
         loadMenuPosition(displayConfigManager.displayConfig.orientation)
 
-        // Start the show animation for the menu
         Log.d(TAG, "Start show overlay ${hashCode()} animation...")
 
         val animatedOverlayView = if (animateOverlayView()) screenOverlayView else null
@@ -291,7 +396,6 @@ abstract class OverlayMenu(
         }
 
         forceWindowResize()
-
         super.resume()
     }
 
@@ -302,7 +406,6 @@ abstract class OverlayMenu(
 
         saveMenuPosition(displayConfigManager.displayConfig.orientation)
 
-        // Start the hide animation for the menu
         Log.d(TAG, "Start overlay ${hashCode()} hide animation...")
         val animatedOverlayView = if (animateOverlayView()) screenOverlayView else null
         animations.startHideAnimation(menuBackground, animatedOverlayView) {
@@ -343,11 +446,6 @@ abstract class OverlayMenu(
         super@OverlayMenu.destroy()
     }
 
-    /**
-     * Handles the screen orientation changes.
-     * It will save the menu position for the previous orientation and load and apply the correct position for the new
-     * orientation.
-     */
     override fun onOrientationChanged() {
         saveMenuPosition(
             if (displayConfigManager.displayConfig.orientation == Configuration.ORIENTATION_LANDSCAPE) Configuration.ORIENTATION_PORTRAIT
@@ -372,13 +470,6 @@ abstract class OverlayMenu(
         }
     }
 
-    /**
-     * Recreates the overlay view after a screen rotation.
-     * As the Z order is dependant to the addition index in the WindowManager, we need to remove
-     * the menu and add it AFTER the new overlay view.
-     *
-     * @param oldOverlayView the overlay view before the rotation.
-     */
     private fun recreateOverlayViewForRotation(oldOverlayView: View) {
         screenOverlayView = onCreateOverlayView()
         overlayLayoutParams = onCreateOverlayViewLayoutParams().apply {
@@ -405,46 +496,21 @@ abstract class OverlayMenu(
         }
 
         lifecycleRegistry.currentState = previousState
-
         setOverlayViewVisibility(oldOverlayView.visibility == View.VISIBLE)
     }
 
-    /**
-     * Called when an item (other than move/hide) in the menu have been pressed.
-     * @param viewId the pressed view identifier.
-     */
     protected open fun onMenuItemClicked(@IdRes viewId: Int): Unit = Unit
-
-    /**
-     * Called when the visibility of the screen overlay have changed.
-     * @param isVisible true if it has became visible, false if it became invisible.
-     */
     protected open fun onScreenOverlayVisibilityChanged(isVisible: Boolean): Unit = Unit
 
-    /**
-     * Get the maximum size the window can take.
-     * @param backgroundView the background view.
-     */
     protected open fun getWindowMaximumSize(backgroundView: ViewGroup): Size {
         backgroundView.measure(MeasureSpec.UNSPECIFIED, MeasureSpec.UNSPECIFIED)
         return Size(backgroundView.measuredWidth, backgroundView.measuredHeight)
     }
 
-    /**
-     * Change the menu view visibility.
-     * @param visibility the new visibility to apply.
-     */
     protected fun setMenuVisibility(visibility: Int) {
         menuLayout.visibility = visibility
     }
 
-    /**
-     * Set the enabled state of a menu item.
-     *
-     * @param view the view of the menu item to change the state of.
-     * @param enabled true to enable the view, false to disable it.
-     * @param clickable true to keep the view clickable, false to ignore all clicks on the view. False by default.
-     */
     protected fun setMenuItemViewEnabled(view: View, enabled: Boolean, clickable: Boolean = false) {
         view.apply {
             isEnabled = enabled || clickable
@@ -452,26 +518,12 @@ abstract class OverlayMenu(
         }
     }
 
-    /**
-     * Set the visibility of a menu item.
-     *
-     * @param view the view of the menu item to change the visibility of.
-     * @param visible true for visible, false for gone.
-     */
     protected fun setMenuItemVisibility(view: View, visible: Boolean) {
         Log.d(TAG, "setMenuItemVisibility for ${hashCode()}, $view to $visible")
         view.visibility = if (visible) View.VISIBLE else View.GONE
-
         if (!resizeController.isAnimating) forceWindowResize()
     }
 
-    /**
-     * Animates the provided layout changes.
-     * Allow to use the xml property animateLayoutChanges. All changes triggering a window resize should be made using
-     * this method.
-     *
-     * @param layoutChanges the changes triggering a resize.
-     */
     protected fun animateLayoutChanges(layoutChanges: () -> Unit) {
         resizeController.animateLayoutChanges(layoutChanges)
     }
@@ -491,27 +543,15 @@ abstract class OverlayMenu(
         }
     }
 
-    /**
-     * Handle the click on the hide overlay button.
-     * Toggle the visible state of the overlay view.
-     */
     private fun onToggleOverlayVisibilityClicked() {
         if (resizeController.isAnimating) return
-
         screenOverlayView?.let { view ->
             setOverlayViewVisibility(view.visibility != View.VISIBLE)
         }
     }
 
-    /**
-     * Change the overlay view visibility, allowing the user the click on the Activity bellow the overlays.
-     * Updates the hide button state, if any.
-     *
-     * @param isOverlayVisible the new visibility to apply.
-     */
     protected fun setOverlayViewVisibility(isOverlayVisible: Boolean) {
         screenOverlayView?.apply {
-
             Log.d(TAG, "setOverlayViewVisibility for ${this@OverlayMenu.hashCode()} with visibility $isOverlayVisible")
 
             if (isOverlayVisible) {
@@ -526,22 +566,9 @@ abstract class OverlayMenu(
         }
     }
 
-    /**
-     * Called when the user touch the [R.id.btn_move] menu item.
-     * Handle the long press and move on this button in order to drag and drop the overlay menu on the screen.
-     *
-     * @param event the touch event occurring on the menu item.
-     *
-     * @return true if the event is handled, false if not.
-     */
-    private fun onMoveTouched(event: MotionEvent) : Boolean {
-        if (resizeController.isAnimating) return false
+    @Deprecated("触摸处理已整合到按钮监听中", ReplaceWith(""))
+    private fun onMoveTouched(event: MotionEvent): Boolean = false
 
-        return moveTouchEventHandler.onTouchEvent(menuLayout, event)
-    }
-
-
-    /** Safe setter for the position of the overlay menu ensuring it will not be displayed outside the screen. */
     private fun updateMenuPosition(position: Point) {
         val displaySize = displayConfigManager.displayConfig.sizePx
         if (displaySize.x < menuLayout.width || displaySize.y < menuLayout.height) return
@@ -599,6 +626,7 @@ abstract class OverlayMenu(
             append(contentPrefix)
                 .append("resumeOnceShown=$resumeOnceShown; ")
                 .append("destroyOnceHidden=$destroyOnceHidden; ")
+                .append("isCollapsed=$isCollapsed; ")
                 .println()
 
             animations.dump(writer, contentPrefix)
@@ -607,5 +635,4 @@ abstract class OverlayMenu(
     }
 }
 
-/** Tag for logs */
 private const val TAG = "OverlayMenu"
