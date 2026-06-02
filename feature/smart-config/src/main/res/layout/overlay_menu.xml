@@ -23,9 +23,11 @@
     android:layout_height="wrap_content"
     android:animateLayoutChanges="false">
 
+    <!-- 修改：设置70%透明度 -->
     <androidx.cardview.widget.CardView
         android:id="@+id/menu_background"
         style="@style/AppTheme.Overlay.FloatingMenu.CardView"
+        android:alpha="0.6"
         android:animateLayoutChanges="true"
         tools:viewBindingIgnore="true">
 

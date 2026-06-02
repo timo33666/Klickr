@@ -582,18 +582,22 @@ abstract class OverlayMenu(
         }
     }
 
+    /**
+     * 加载悬浮窗保存的位置，如果没有则使用默认位置：贴近屏幕左边，垂直居中。
+     */
     private fun loadMenuPosition(orientation: Int) {
         val savedPosition = positionDataSource.loadMenuPosition(orientation)
         if (savedPosition != null && savedPosition.x != 0 && savedPosition.y != 0) {
             updateMenuPosition(savedPosition)
         } else {
             menuLayout.doWhenMeasured {
-                updateMenuPosition(
-                    Point(
-                        (displayConfigManager.displayConfig.sizePx.x - menuLayout.width) / 2,
-                        (displayConfigManager.displayConfig.sizePx.y / 2) - menuLayout.height,
-                    )
-                )
+                val displaySize = displayConfigManager.displayConfig.sizePx
+                val menuWidth = menuLayout.width
+                val menuHeight = menuLayout.height
+                // 默认位置：X = 0（贴近左边），Y = 垂直居中
+                val defaultX = 0
+                val defaultY = (displaySize.y - menuHeight) / 2
+                updateMenuPosition(Point(defaultX, defaultY))
             }
         }
     }
