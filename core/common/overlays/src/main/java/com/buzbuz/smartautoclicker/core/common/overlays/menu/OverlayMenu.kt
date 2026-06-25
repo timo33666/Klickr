@@ -22,6 +22,7 @@ import android.graphics.PixelFormat
 import android.graphics.Point
 import android.util.Log
 import android.util.Size
+import android.view.GestureDetector          // ========== 折叠功能新增 ==========
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -29,7 +30,7 @@ import android.view.View
 import android.view.View.MeasureSpec
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.ImageButton
+import android.widget.ImageButton           // ========== 折叠功能新增（类型明确） ==========
 
 import androidx.annotation.CallSuper
 import androidx.annotation.IdRes
@@ -134,8 +135,19 @@ abstract class OverlayMenu(
 
     /** The hide overlay button, if provided. */
     private var hideOverlayButton: ImageButton? = null
-    /** The move button, if provided. */
-    private var moveButton: View? = null
+    /** The move button, if provided. Must be ImageButton to support icon switching. */
+    private var moveButton: ImageButton? = null           // ========== 折叠功能修改（原为 View?） ==========
+
+    // ========== 折叠功能新增成员变量 ==========
+    /** 当前是否处于折叠状态（只显示移动按钮） */
+    private var isCollapsed = false
+    /** 是否正在拖拽中（长按触发） */
+    private var isDragging = false
+    /** 手势检测器，用于识别长按事件（长按触发拖拽，短按触发折叠切换） */
+    private lateinit var gestureDetector: GestureDetector
+    /** 保存被隐藏按钮的原始可见性，以便展开时精确恢复 */
+    private val originalVisibilities = mutableMapOf<View, Int>()
+    // ================================================
 
     /**
      * The view to be displayed between the current activity and the overlay menu.
@@ -184,6 +196,11 @@ abstract class OverlayMenu(
         }
     }
 
+    // ========== 折叠功能新增工具方法 ==========
+    /** 将 dp 转为像素，用于设置折叠时移动按钮的固定尺寸 */
+    private fun dpToPx(dp: Int): Int = (dp * context.resources.displayMetrics.density).toInt()
+    // =========================================
+
     @CallSuper
     @SuppressLint("ResourceType")
     override fun onCreate() {
@@ -202,6 +219,16 @@ abstract class OverlayMenu(
 
         // Setup the touch event handler for the move button
         moveTouchEventHandler = OverlayMenuMoveTouchEventHandler(::updateMenuPosition)
+
+        // ========== 折叠功能新增：初始化手势检测器 ==========
+        gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onLongPress(e: MotionEvent) {
+                // 长按时标记为拖拽模式，将事件交给移动处理器
+                isDragging = true
+                moveTouchEventHandler.onTouchEvent(menuLayout, e)
+            }
+        })
+        // ===================================================
 
         // Restore the last menu position, if any.
         menuLayoutParams.gravity = Gravity.TOP or Gravity.START
@@ -240,8 +267,25 @@ abstract class OverlayMenu(
             @SuppressLint("ClickableViewAccessibility") // View is only drag and drop, no click
             when (view.id) {
                 R.id.btn_move -> {
-                    moveButton = view
-                    view.setOnTouchListener { _: View, event: MotionEvent -> onMoveTouched(event) }
+                    // ========== 折叠功能修改 ==========
+                    moveButton = view as ImageButton
+                    // 单击触发展开/折叠
+                    view.setOnClickListener { toggleCollapse() }
+                    // 触摸事件同时交给手势检测器（判断长按）和移动处理器
+                    view.setOnTouchListener { _, event ->
+                        gestureDetector.onTouchEvent(event)
+                        if (isDragging) {
+                            // 长按后进入拖拽模式
+                            moveTouchEventHandler.onTouchEvent(menuLayout, event)
+                            if (event.action == MotionEvent.ACTION_UP) {
+                                isDragging = false
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    // ===================================
                 }
                 R.id.btn_hide_overlay -> {
                     hideOverlayButton = (view as ImageButton)
@@ -255,6 +299,64 @@ abstract class OverlayMenu(
             }
         }
     }
+
+    // ========== 折叠功能核心方法 ==========
+    /**
+     * 切换折叠/展开状态。
+     * 折叠时只显示移动按钮（变成竖条），其他按钮隐藏。
+     * 展开时恢复所有按钮原样。
+     *
+     * 所有布局修改放在 [animateLayoutChanges] 块中，保证一次性完成 measure/layout，
+     * 避免窗口宽度计算不一致。
+     */
+    private fun toggleCollapse() {
+        if (resizeController.isAnimating) return
+        isCollapsed = !isCollapsed
+
+        animateLayoutChanges {
+            // 1. 修改移动按钮的尺寸和图标
+            moveButton?.apply {
+                val lp = layoutParams
+                if (isCollapsed) {
+                    // 折叠：固定为竖条尺寸（宽16dp，高40dp），图标换成竖条
+                    lp.width = dpToPx(16)
+                    lp.height = dpToPx(40)
+                    setImageResource(R.drawable.btn_handle)  // 确保此资源存在
+                } else {
+                    // 展开：恢复 WRAP_CONTENT，图标换回移动图标
+                    lp.width = ViewGroup.LayoutParams.WRAP_CONTENT
+                    lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                    setImageResource(R.drawable.ic_move)
+                }
+                requestLayout()
+            }
+
+            // 2. 隐藏或显示其他按钮（遍历 buttonsContainer，排除移动按钮）
+            buttonsContainer.forEach { child ->
+                if (child == moveButton) return@forEach
+                if (isCollapsed) {
+                    // 折叠：保存可见性并隐藏
+                    originalVisibilities[child] = child.visibility
+                    child.visibility = View.GONE
+                } else {
+                    // 展开：恢复可见性（若没有保存则设为 VISIBLE）
+                    val original = originalVisibilities.remove(child)
+                    child.visibility = original ?: View.VISIBLE
+                }
+            }
+        }
+
+        // 折叠后调整位置，防止移出屏幕
+        if (isCollapsed) {
+            menuLayout.doWhenMeasured {
+                val displaySize = displayConfigManager.displayConfig.sizePx
+                val newX = menuLayoutParams.x.coerceIn(0, displaySize.x - menuLayout.width)
+                val newY = menuLayoutParams.y.coerceIn(0, displaySize.y - menuLayout.height)
+                updateMenuPosition(Point(newX, newY))
+            }
+        }
+    }
+    // =====================================
 
     final override fun start() {
         if (lifecycle.currentState != Lifecycle.State.CREATED) return
@@ -459,6 +561,12 @@ abstract class OverlayMenu(
      * @param visible true for visible, false for gone.
      */
     protected fun setMenuItemVisibility(view: View, visible: Boolean) {
+        // ========== 折叠功能新增保护 ==========
+        // 折叠状态下，只允许操作移动按钮，其他按钮的可见性由折叠逻辑管理
+        if (isCollapsed && view.id != R.id.btn_move) {
+            return
+        }
+        // ===================================
         Log.d(TAG, "setMenuItemVisibility for ${hashCode()}, $view to $visible")
         view.visibility = if (visible) View.VISIBLE else View.GONE
 
@@ -599,6 +707,7 @@ abstract class OverlayMenu(
             append(contentPrefix)
                 .append("resumeOnceShown=$resumeOnceShown; ")
                 .append("destroyOnceHidden=$destroyOnceHidden; ")
+                .append("isCollapsed=$isCollapsed; ")   // ========== 折叠功能新增 ==========
                 .println()
 
             animations.dump(writer, contentPrefix)

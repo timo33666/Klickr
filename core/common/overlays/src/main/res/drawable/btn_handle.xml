@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="16dp"
+    android:height="40dp"
+    android:viewportWidth="64.0"
+    android:viewportHeight="122.0">
+
+    <!-- 用一个 group 包裹所有路径，整体平移 -->
+    <group
+        android:translateX="16"
+        android:translateY="30.5">
+        <path
+            android:fillColor="#ff000000"
+            android:pathData="M0,0 L32,0 L32,61 L0,61 Z
+                              M17,0.7 C17,1.2 20.4,7.8 24.5,15.5 L31.9,29.5 L32,14.7 L32,0 L24.5,0 C20.4,0 17,0.3 17,0.7 Z
+                              M0,30.5 L0,59.5 L7.5,45.5 C11.6,37.8 15,31.3 15,31 C15,30.7 11.6,24 7.6,16 L0.2,1.5 L0,30.5 Z
+                              M24.4,46.7 C20.6,53.7 17.4,59.8 17.2,60.2 C17,60.6 20.2,61 24.4,61 L32,61 L32,47.5 C32,40.1 31.8,34 31.6,34 C31.5,34 28.2,39.7 24.4,46.7 Z"
+            android:strokeColor="#00000000"
+            android:fillType="evenOdd" />
+    </group>
+
+</vector>
