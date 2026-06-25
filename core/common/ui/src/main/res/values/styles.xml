@@ -233,10 +233,10 @@
         <item name="android:orientation">vertical</item>
         <item name="android:gravity">center_horizontal</item>
     </style>
-    <!-- Style for the buttons of the floating menu. -->
+    <!-- Style for the buttons of the floating menu，分离高宽，宽度收窄. -->
     <style name="AppTheme.Overlay.FloatingMenu.Buttons">
-        <item name="android:layout_width">@dimen/overlay_menu_btn_size</item>
-        <item name="android:layout_height">@dimen/overlay_menu_btn_size</item>
+        <item name="android:layout_width">@dimen/overlay_menu_btn_width</item>
+<item name="android:layout_height">@dimen/overlay_menu_btn_height</item>
         <item name="android:background">@android:color/transparent</item>
         <item name="android:tint">@color/overlayMenuButtons</item>
         <item name="android:scaleType">fitCenter</item>

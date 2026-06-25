@@ -61,8 +61,13 @@
     <dimen name="dropdown_item_icon_size">24dp</dimen>
 
     <dimen name="bottom_sheet_min_height">600dp</dimen>
+<!-- 原统一尺寸，不再直接使用（可以注释掉或保留备用） -->
+<dimen name="overlay_menu_btn_size">42dp</dimen> 
 
-    <dimen name="overlay_menu_btn_size">42dp</dimen>
+<!-- 新：按钮宽度（单独控制，可缩小） -->
+<dimen name="overlay_menu_btn_width">32dp</dimen>
+<!-- 新：按钮高度（单独控制，保持舒适点击区域） -->
+<dimen name="overlay_menu_btn_height">42dp</dimen>
 
     <dimen name="overlay_position_selector_thickness">6dp</dimen>
     <dimen name="overlay_position_selector_radius">28dp</dimen>
